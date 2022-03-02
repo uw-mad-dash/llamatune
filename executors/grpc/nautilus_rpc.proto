@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+service ExecutionService {
+  rpc Execute (ExecuteRequest) returns (ExecuteReply) {}
+  rpc Heartbeat (EmptyMessage) returns (StatsReply) {}
+}
+
+message ExecuteRequest{
+  // DBMS Info structure
+  message DBMSInfo {
+    string name = 1;
+    google.protobuf.Struct config = 2;
+  }
+
+  //// WorkloadInfo
+
+  // YCSB
+  message YCSBWorkloadProperties {
+    uint64 recordcount = 1;
+    uint64 operationcount = 2;
+    uint32 threadcount = 3;
+  }
+  message YCSBInfo {
+    string name = 1;
+    string workload = 2;
+    int32 warmup_duration = 3;
+    int32 benchmark_duration = 4;
+    optional YCSBWorkloadProperties workload_properties = 5;
+  }
+
+  // OLTP-Bench
+  message OLTPBenchWorkloadProperties {
+    uint32 scalefactor = 1;
+    uint32 terminals = 2;
+    string work_rate = 3;
+  }
+  message OLTPBenchInfo {
+    string name = 1;
+    string workload = 2;
+    int32 warmup_duration = 3;
+    int32 benchmark_duration = 4;
+    optional OLTPBenchWorkloadProperties workload_properties = 5;
+    bool capture_raw_perf_stats = 6;
+  }
+
+  // BenchBase
+  message BenchBaseWorkloadProperties {
+    uint32 scalefactor = 1;
+    uint32 terminals = 2;
+    string work_rate = 3;
+  }
+  message BenchBaseInfo {
+    string name = 1;
+    string workload = 2;
+    int32 warmup_duration = 3;
+    int32 benchmark_duration = 4;
+    optional BenchBaseWorkloadProperties workload_properties = 5;
+    bool capture_raw_perf_stats = 6;
+  }
+
+  oneof _dbms_info {
+    DBMSInfo dbms_info = 1;
+  }
+
+  oneof _benchmark_info {
+    YCSBInfo ycsb_info = 2;
+    OLTPBenchInfo oltpbench_info = 3;
+    BenchBaseInfo benchbase_info = 4;
+  }
+}
+
+message ExecuteReply {
+  google.protobuf.Struct results = 1;
+}
+
+message StatsReply {
+  google.protobuf.Timestamp alive_since = 1;
+  google.protobuf.Timestamp time_now = 2;
+  uint32 jobs_finished = 3;
+}
+
+message EmptyMessage {
+  // Empty message
+}
