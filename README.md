@@ -12,4 +12,6 @@ Core functionality is implemented in the following files:
 
 `optimizer.py`: optimizer initialization
 
-`run-smac.py`: main script used for experiemnts (feedback loop)
+`run-smac.py`: main script used for experiments for BO-based optimizers
+
+`run-ddpg.py`: main script used for experiments for RL-based optimizer
