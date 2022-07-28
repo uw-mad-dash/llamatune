@@ -1,4 +1,5 @@
 import argparse
+import random
 from copy import copy, deepcopy
 from pathlib import Path
 
@@ -9,8 +10,6 @@ import numpy as np
 from config import config
 from executors.executor import ExecutorFactory
 from optimizer import get_new_optimizer, get_ddpg_optimizer
-from policy import PolicyFactory
-from reproducible import fix_global_random_state
 from space import ConfigSpaceGenerator
 from storage import StorageFactory
 
@@ -21,6 +20,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
+def fix_global_random_state(seed=None):
+    random.seed(seed)
+    np.random.seed(seed)
 
 class ExperimentState:
     def __init__(self, dbms_info, benchmark_info, results_path: Path, target_metric: str):

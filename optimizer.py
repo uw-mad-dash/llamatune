@@ -5,22 +5,15 @@ import numpy as np
 import pandas as pd
 
 from config import config
-from reproducible import fix_optimizer_random_state
 from adapters import LHDesignWithBiasedSampling
-
-# pylint: disable=import-error
-from mlos.Optimizers.OptimizationProblem import OptimizationProblem, Objective
-from mlos.Optimizers.BayesianOptimizer import BayesianOptimizer
-from mlos.Optimizers.BayesianOptimizerConfigStore import bayesian_optimizer_config_store
-from mlos.Optimizers.BayesianOptimizerFactory import BayesianOptimizerFactory
-
-from mlos.Logger import create_logger
-logger = create_logger(__name__, logging_level=logging.INFO)
 
 # SMAC
 from smac.facade.smac_hpo_facade import SMAC4HPO
 from smac.facade.smac_bb_facade import SMAC4BB
 from smac.scenario.scenario import Scenario
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 
 def initialize_optimizer(optimization_problem, rand_percentage=0.1, n_estimators=100):
     optimizer_config = bayesian_optimizer_config_store.default

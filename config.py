@@ -1,9 +1,8 @@
-import logging
 from configparser import SafeConfigParser
 
-# pylint: disable=import-error
-from mlos.Logger import create_logger
-logger = create_logger(__name__, logging_level=logging.INFO)
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 
 # YCSB
 ycsb_defaut_workload_properties = dict(
@@ -12,56 +11,8 @@ ycsb_defaut_workload_properties = dict(
     threadcount=40
 )
 
-# OLTP-Bench
-oltpbench_default_workload_properties = {
-    # TODO: crashes for PSQL
-    'auctionmark': dict(
-        scalefactor=40,
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'seats': dict(
-        scalefactor=50, # ~20 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'tpcc': dict(
-        scalefactor=100, # ~20-22 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'twitter': dict(
-        scalefactor=1500, # ~20 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'wikipedia': dict(
-        scalefactor=65, # ~22 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'ycsb': dict(
-        # NOTE: if crashes try lower scalefactor values (5K worked for PSQL)
-        scalefactor=9000,
-        terminals=40,
-        work_rate='unlimited'
-    )
-}
-
 # Benchbase
 benchbase_default_workload_properties = {
-    # CRASHES
-    'auctionmark': dict(
-        scalefactor=50, # ~20 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    # CRASHES
-    'epinions': dict(
-        scalefactor=100, # ~5.5 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
     'resourcestresser': dict(
         scalefactor=20000,  # ~20 GB
         terminals=40,
@@ -72,18 +23,6 @@ benchbase_default_workload_properties = {
         terminals=40,
         work_rate='unlimited'
     ),
-    # CRASHES
-    'smallbank': dict(
-        scalefactor=25, # ~22 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    # CRASHES
-    'tatp': dict(
-        scalefactor=100, # ~20 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
     'tpcc': dict(
         scalefactor=100, # ~20 GB
         terminals=40,
@@ -91,17 +30,6 @@ benchbase_default_workload_properties = {
     ),
     'twitter': dict(
         scalefactor=1500, # ~20 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    # CRASHES
-    'wikipedia': dict(
-        scalefactor=65, # ~22 GB
-        terminals=40,
-        work_rate='unlimited'
-    ),
-    'ycsb': dict(
-        scalefactor=9000, # ~19 GB
         terminals=40,
         work_rate='unlimited'
     ),
@@ -122,12 +50,6 @@ benchbase_default_workload_properties = {
         terminals=40,
         work_rate="60000", # ~50% of max
     ),
-    'resourcestresser-lat': dict(
-        scalefactor=20000,  # ~20 GB
-        terminals=40,
-        work_rate="7",
-    ),
-
 }
 
 workload_defaults = {
@@ -155,6 +77,9 @@ class Configuration:
         # Save dbms_info
         assert 'dbms_info' in self.dict, 'Section `dbms_info` not specified'
         self._dbms_info = self.dict['dbms_info']
+
+        if 'version' not in self._dbms_info:
+            self._dbms_info['version'] = '9.6'
 
         # Save benchmark_info
         assert 'benchmark_info' in self.dict, 'Section `benchmark_info` not specified'

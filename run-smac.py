@@ -1,4 +1,5 @@
 import argparse
+import random
 from copy import copy, deepcopy
 from pathlib import Path
 
@@ -9,8 +10,6 @@ import numpy as np
 from config import config
 from executors.executor import ExecutorFactory
 from optimizer import get_new_optimizer, get_smac_optimizer
-from policy import PolicyFactory
-from reproducible import fix_global_random_state
 from space import ConfigSpaceGenerator
 from storage import StorageFactory
 
@@ -21,6 +20,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 
+def fix_global_random_state(seed=None):
+    random.seed(seed)
+    np.random.seed(seed)
 
 class ExperimentState:
     def __init__(self, dbms_info, benchmark_info, results_path: Path, target_metric: str):
@@ -80,7 +82,11 @@ def evaluate_dbms_conf(sample, state=None):
     logger.info(f'Evaluating Configuration:\n{conf}')
 
     ## Send configuration task to Nautilus
-    dbms_info = dict(name=state.dbms_info['name'], config=conf)
+    dbms_info = dict(
+        name=state.dbms_info['name'],
+        config=conf,
+        version=state.dbms_info['version']
+    )
     perf_stats = executor.evaluate_configuration(dbms_info, state.benchmark_info)
     logger.info(f'Performance Statistics:\n{perf_stats}')
 
@@ -166,10 +172,6 @@ optimizer = get_smac_optimizer(config, spaces, evaluate_dbms_conf, exp_state)
 
 # init executor
 executor = ExecutorFactory.from_config(config, spaces, storage)
-
-# init pruning policy
-# TODO: ignore prunning policy for now
-#policy = PolicyFactory.from_config(config, optimizer, spaces, storage)
 
 # evaluate on default config
 default_config = spaces.get_default_configuration()

@@ -3,150 +3,10 @@ from copy import deepcopy
 from importlib import import_module
 from pathlib import Path
 
-# pylint: disable=import-error
-from mlos.Spaces import (Point, SimpleHypergrid, Hypergrid,
-        ContinuousDimension, CategoricalDimension, DiscreteDimension)
-
 import ConfigSpace as CS
 import ConfigSpace.hyperparameters as CSH
 
 from adapters import *
-
-class OpimizerSpaceGenerator:
-    knob_types = ['enum', 'integer', 'real']
-    valid_adapter_aliases = ['none', 'tree', 'tree-sv']
-
-    def __init__(self, definition=None, include=None, ignore=None,
-                    target_metric=None, adapter_alias='none',
-                    finalize_conf_func=None, unfinalize_conf_func=None, **kwargs):
-        if (ignore is not None) and (include is not None):
-            raise ValueError("Define either `ignore_knobs' or `include_knobs'")
-        assert isinstance(target_metric, str), 'Target metric should be of type string'
-        assert adapter_alias in self.valid_adapter_aliases, \
-            f"Valid values for `adapter_alias' are: {self.valid_adapter_aliases}"
-
-        assert finalize_conf_func != None, 'Space should define "finalize_conf" function'
-        self.finalize_conf_func = staticmethod(finalize_conf_func)
-        assert unfinalize_conf_func != None, 'Space should define "unfinalize_conf" function'
-        self.unfinalize_conf_func = staticmethod(unfinalize_conf_func)
-
-        all_knobs = set([ d['name'] for d in  definition ])
-        include_knobs = include if include is not None else all_knobs - set(ignore)
-
-        self.knobs = [ info for info in definition if info['name'] in include_knobs ]
-        self.knobs_dict = { d['name']: d for d in self.knobs }
-
-        self._target_metric = target_metric # to be used by the property
-        self._adapter_alias = adapter_alias
-
-    @property
-    def target_metric(self):
-        return self._target_metric
-
-    def generate_input_space(self, ignore_extra_knobs=None, transformers=None):
-        ignore_extra_knobs = ignore_extra_knobs or [ ]
-
-        input_dimensions = [ ]
-        for info in self.knobs:
-            name, knob_type = info['name'], info['type']
-            if name in ignore_extra_knobs:
-                continue
-
-            if knob_type not in self.knob_types:
-                raise NotImplementedError(f'Knob type of "{knob_type}" is not supported :(')
-
-            ## Categorical
-            if knob_type == 'enum':
-                dim = CategoricalDimension(name, values=info['choices'])
-            ## Numerical
-            elif knob_type == 'integer':
-                dim = DiscreteDimension(name, info['min'], info['max'])
-            elif knob_type == 'real':
-                dim = ContinuousDimension(name, min=info['min'], max=info['max'])
-
-            input_dimensions.append(dim)
-
-        input_space = SimpleHypergrid(name="input", dimensions=input_dimensions)
-
-        # Initialize input_space_adapter
-        self._input_space_adapter = None
-        if self._adapter_alias == 'none':
-            return input_space
-        else:
-            assert self._adapter_alias in ['tree', 'tree-sv']
-            split_special_values = self._adapter_alias == 'tree-sv'
-            self._input_space_adapter = \
-                PostgresFlatToHierarchicalHypergridAdapter(
-                    input_space, split_special_values=split_special_values)
-            return self._input_space_adapter.target
-
-    def generate_output_space(self, min_value=0, max_value=10**9):
-        # Overall throughput: requests per second
-        # TODO: Overall latency
-        output_dim = ContinuousDimension(
-            name=self.target_metric, min=min_value, max=max_value)
-        output_space = SimpleHypergrid(name="objective", dimensions=[output_dim])
-        return output_space
-
-    def get_default_config_point(self) -> Point:
-        return Point(**{ k: v['default'] for k, v in self.knobs_dict.items() })
-
-    def point_from_dict(self, d) -> Point:
-        return Point(**d)
-
-    def finalize_conf(self, conf, n_decimals=2):
-        return self.finalize_conf_func.__func__(
-                conf, self.knobs_dict, n_decimals=n_decimals)
-
-    def unfinalize_conf(self, conf):
-        return self.unfinalize_conf_func.__func__(conf, self.knobs_dict)
-
-    def unproject_input_point(self, point: Point) -> Point:
-        if self._input_space_adapter:
-            return self._input_space_adapter.unproject_point(point)
-        return point
-
-    @classmethod
-    def from_config(cls, config):
-        valid_config_fields = ['definition', 'include', 'ignore',
-                                    'adapter_alias', 'target_metric']
-
-        spaces_config = deepcopy(config['spaces'])
-        assert all(field in valid_config_fields for field in spaces_config), \
-            'Configuration contains invalid fields: ' \
-            f'{set(spaces_config.keys()) - set(valid_config_fields)}'
-        assert 'definition' in spaces_config, 'Spaces section should contain "definition" key'
-        assert 'include' in spaces_config or 'ignore' in spaces_config, \
-                    'Spaces section should contain "include" or "ignore" key'
-        assert not ('include' in spaces_config and 'ignore' in spaces_config), \
-                    'Spaces section should not contain both "include" and "ignore" keys'
-        assert 'target_metric' in spaces_config, \
-                    'Spaces section should contain "target_metric" key'
-
-        # Read space definition from json file
-        definition_fp = Path('./spaces/definitions') / f"{spaces_config['definition']}.json"
-        with open(definition_fp, 'r') as f:
-            definition = json.load(f)
-        all_knobs_name = [ d['name'] for d in definition ]
-
-        # Import designated module and utilize knobs
-        include = 'include' in spaces_config
-        module_name = spaces_config['include'] if include else spaces_config['ignore']
-        import_path = module_name.replace('/', '.')
-        module = import_module(f"spaces.{import_path}")
-        knobs = getattr(module, 'KNOBS')
-        assert isinstance(knobs, list) and all([ k in all_knobs_name for k in knobs])
-        finalize_conf_func = getattr(module, 'finalize_conf')
-        unfinalize_conf_func = getattr(module, 'unfinalize_conf')
-
-        return cls(definition=definition,
-            include=knobs if include else None,
-            ignore=knobs if not include else None,
-            target_metric=spaces_config['target_metric'],
-            adapter_alias=spaces_config.get('adapter_alias', 'none'),
-            finalize_conf_func=finalize_conf_func,
-            unfinalize_conf_func=unfinalize_conf_func)
-
 
 class ConfigSpaceGenerator:
     knob_types = ['enum', 'integer', 'real']
@@ -285,7 +145,7 @@ class ConfigSpaceGenerator:
     def unfinalize_conf(self, conf):
         return self.unfinalize_conf_func.__func__(conf, self.knobs_dict)
 
-    def unproject_input_point(self, point: Point) -> Point:
+    def unproject_input_point(self, point):
         if self._input_space_adapter:
             return self._input_space_adapter.unproject_point(point)
         return point
@@ -337,5 +197,3 @@ class ConfigSpaceGenerator:
             quantization_factor=spaces_config.get('quantization_factor', None),
             finalize_conf_func=finalize_conf_func,
             unfinalize_conf_func=unfinalize_conf_func)
-
-
