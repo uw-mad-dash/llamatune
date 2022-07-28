@@ -23,8 +23,8 @@ from sklearn.preprocessing import StandardScaler
 from executors.grpc.nautilus_rpc_pb2 import ExecuteRequest, EmptyMessage
 from executors.grpc.nautilus_rpc_pb2_grpc import ExecutionServiceStub
 
-from mlos.Logger import create_logger
-logger = create_logger(__name__, logging_level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 
 def run_command(cmd, **kwargs):
     logger.debug(f'Running command: `{cmd}`...')
@@ -56,17 +56,31 @@ def get_measured_performance(perf_stats, benchmark):
         throughput, runtime = (
             overall_stats['Throughput(ops/sec)'],
             overall_stats['RunTime(ms)'] / 1000.0)
-        # Manually compute latency (weighted by ops)
-        groups = [
-            g for name, g in perf_stats['ycsb']['groups'].items()
-            if name != 'overall'
-        ]
-        latency_info = [ # latencies are in micro-seconds
-            (float(g['statistics']['p95']), int(g['statistics']['Return=OK']))
-            for g in groups
-        ]
-        latencies, weights = tuple(zip(*latency_info))
-        latency = np.average(latencies, weights=weights) / 1000.0
+
+        # Check if Return=ERROR in read/update results
+        error = False
+        try:
+            read_stats = perf_stats['ycsb']['groups']['read']['statistics']
+            assert 'Return=ERROR' not in read_stats.keys()
+            update_stats = perf_stats['ycsb']['groups']['update']['statistics']
+            assert 'Return=ERROR' not in update_stats.keys()
+        except AssertionError:
+            logger.warning('Return=ERROR found in YCSB; Treating it as failed run!')
+            throughput, latency = 0.1, 2 ** 30
+            error = True
+
+        if not error:
+            # Manually compute latency (weighted by ops)
+            groups = [
+                g for name, g in perf_stats['ycsb']['groups'].items()
+                if name != 'overall'
+            ]
+            latency_info = [ # latencies are in micro-seconds
+                (float(g['statistics']['p95']), int(g['statistics']['Return=OK']))
+                for g in groups
+            ]
+            latencies, weights = tuple(zip(*latency_info))
+            latency = np.average(latencies, weights=weights) / 1000.0
 
     elif benchmark == 'oltpbench':
         summary_stats = perf_stats['oltpbench_summary']
@@ -88,6 +102,52 @@ def get_measured_performance(perf_stats, benchmark):
         'latency': latency,
         'runtime': runtime,
     }
+
+def get_dbms_metrics(results, num_expected):
+    """ Parses DBMS metrics and returns their mean as a numpy array
+
+    NOTE: Currently only DB-wide metrics are parsed; not table-wide ones
+    """
+    GLOBAL_STAT_VIEWS = ['pg_stat_bgwriter', 'pg_stat_database']
+    PER_TABLE_STAT_VIEWS = [ # Not used currently
+            'pg_stat_user_tables',
+            'pg_stat_user_indexes',
+            'pg_statio_user_tables',
+            'pg_statio_user_indexes'
+    ]
+    try:
+        metrics = json.loads(results['samplers']['db_metrics'])['postgres']
+        samples = metrics['samples']
+    except Exception as err:
+        logger.error(f'Error while *retrieving* DBMS metrics: {repr(err)}')
+        logger.info('Returning dummy (i.e., all zeros) metrics')
+        return np.zeros(num_expected)
+
+    try:
+        global_dfs = [ ]
+        for k in GLOBAL_STAT_VIEWS:
+            s = samples[k]
+            v = [ l for l in s if l != None ]
+            cols = [ f'{k}_{idx}' for idx in range(len(v[0])) ]
+
+            df = pd.DataFrame(data=v, columns=cols)
+            df.dropna(axis=1, inplace=True)
+            df = df.select_dtypes(['number'])
+            global_dfs.append(df)
+
+        df = pd.concat(global_dfs, axis=1)
+        metrics = df.mean(axis=0).to_numpy()
+    except Exception as err:
+        logger.error(f'Error while *parsing* DBMS metrics: {repr(err)}')
+        logger.info('Returning dummy (i.e., all zeros) metrics')
+        return np.zeros(num_expected)
+
+    if len(metrics) != num_expected:
+        logger.error(f'Num of metrics [{len(metrics)}] is different than expected [{num_expected}] :(')
+        logger.info('Returning dummy (i.e., all zeros) metrics')
+        return np.zeros(num_expected)
+
+    return metrics
 
 def is_result_valid(results, benchmark):
     # Check results
@@ -125,23 +185,38 @@ class ExecutorInterface(ABC):
         raise NotImplementedError
 
 class DummyExecutor(ExecutorInterface):
+    def __init__(self, spaces, storage, parse_metrics=False, num_dbms_metrics=None, **kwargs):
+        self.parse_metrics = parse_metrics
+        self.num_dbms_metrics = num_dbms_metrics
+
     def evaluate_configuration(self, dbms_info, benchmark_info):
-        return {
+        perf = {
             'throughput': float(random.randint(1000, 10000)),
             'latency': float(random.randint(1000, 10000)),
             'runtime': 0,
         }
 
+        if not self.parse_metrics:
+            return perf
+
+        metrics = np.random.rand(self.num_dbms_metrics)
+        return perf, metrics
+
 class NautilusExecutor(ExecutorInterface):
     GRPC_MAX_MESSAGE_LENGTH = 32 * (2 ** 20) # 32MB
     # NOTE: Nautilus already has a soft time limit (default is *1.5 hour*)
-    EXECUTE_TIMEOUT_SECS = 4 * 60 * 60 # 4 hours
+    EXECUTE_TIMEOUT_SECS = 2 * 60 * 60 # 4 hours
 
-    def __init__(self, spaces, storage, host=None, port=None, n_retries=10):
+    def __init__(self, spaces, storage, host=None, port=None, n_retries=10,
+                parse_metrics=False, num_dbms_metrics=None):
         super().__init__(spaces, storage)
 
         self.host, self.port = host, port
         self.iter = 0
+        self.parse_metrics = parse_metrics
+        if parse_metrics:
+            assert(num_dbms_metrics >= 0)
+            self.num_dbms_metrics = num_dbms_metrics
 
         delay = 2
         for idx in range(1, n_retries + 1):
@@ -177,7 +252,7 @@ class NautilusExecutor(ExecutorInterface):
         config = Struct()
         config.update(dbms_info['config']) # pylint: disable=no-member
         dbms_info = ExecuteRequest.DBMSInfo(
-            name=dbms_info['name'], config=config)
+            name=dbms_info['name'], config=config, version=dbms_info['version'])
 
         if benchmark_info['name'] == 'ycsb':
             request = ExecuteRequest(
@@ -193,7 +268,12 @@ class NautilusExecutor(ExecutorInterface):
 
         # Do RPC
         logger.debug(f'Calling Nautilus RPC with request:\n{request}')
-        response = self.stub.Execute(request, timeout=self.EXECUTE_TIMEOUT_SECS)
+        try:
+            response = self.stub.Execute(request, timeout=self.EXECUTE_TIMEOUT_SECS)
+        except Exception as err:
+            logger.error(f'Error while submitting task: {repr(err)}')
+            with open('error.txt', 'a') as f:
+                f.write(repr(err))
 
         logger.info(f'Received response JSON [len={len(response.results)}]')
         results = MessageToDict(response)['results']
@@ -211,11 +291,17 @@ class NautilusExecutor(ExecutorInterface):
         finally:
             if not is_valid:
                 logger.error('Nautilus experienced an error.. check logs :(')
-                return None
+                return None if not self.parse_metrics else (None, np.zeros(self.num_dbms_metrics))
 
         # Retrieve throughput & latency stats
-        return get_measured_performance(
+        perf = get_measured_performance(
                 results['performance_stats'], benchmark_info['name'])
+        if not self.parse_metrics:
+            return perf
+
+        # Parse DBMS metrics and return along with perf
+        return perf, get_dbms_metrics(results, self.num_dbms_metrics)
+
 
     def close(self):
         """ Close connection to Nautilus """

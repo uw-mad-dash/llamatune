@@ -9,8 +9,8 @@ from string import Template
 from prettytable import PrettyTable
 
 # pylint: disable=import-error
-from mlos.Logger import create_logger
-logger = create_logger(__name__, logging_level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 
 LOG_FILENAME = 'log.txt'
 

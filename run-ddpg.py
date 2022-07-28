@@ -9,7 +9,7 @@ import numpy as np
 
 from config import config
 from executors.executor import ExecutorFactory
-from optimizer import get_new_optimizer, get_smac_optimizer
+from optimizer import get_new_optimizer, get_ddpg_optimizer
 from space import ConfigSpaceGenerator
 from storage import StorageFactory
 
@@ -59,6 +59,10 @@ class ExperimentState:
     def target_metric(self) -> str:
         return self._target_metric
 
+    @property
+    def default_perf(self) -> float:
+        return self.default_perf_stats[self.target_metric]
+
     def is_better_perf(self, perf, other):
         return (perf > other) if not self.minimize else (perf < other)
 
@@ -87,7 +91,7 @@ def evaluate_dbms_conf(sample, state=None):
         config=conf,
         version=state.dbms_info['version']
     )
-    perf_stats = executor.evaluate_configuration(dbms_info, state.benchmark_info)
+    perf_stats, metrics = executor.evaluate_configuration(dbms_info, state.benchmark_info)
     logger.info(f'Performance Statistics:\n{perf_stats}')
 
     if state.default_perf_stats is None:
@@ -129,7 +133,8 @@ def evaluate_dbms_conf(sample, state=None):
     state.iter += 1
 
     # Register sample to the optimizer -- optimizer always minimizes
-    return perf if state.minimize else -perf
+    perf = perf if state.minimize else -perf
+    return perf, metrics
 
 
 # Parse args
@@ -140,6 +145,8 @@ args = parser.parse_args()
 
 config.update_from_file(args.conf_filepath)
 config.seed = args.seed
+### number of DBMS internal metrics being sampled
+config.num_dbms_metrics = 27
 
 # Set global random state
 fix_global_random_state(seed=config.seed)
@@ -167,30 +174,31 @@ results_path = Path(config['storage']['outdir']) / inner_path
 exp_state = ExperimentState(
     dbms_info_config, benchmark_info_config, results_path, target_metric)
 
+
 # Create a new optimizer
-optimizer = get_smac_optimizer(config, spaces, evaluate_dbms_conf, exp_state)
+optimizer = get_ddpg_optimizer(config, spaces, evaluate_dbms_conf, exp_state)
 
 # init executor
-executor = ExecutorFactory.from_config(config, spaces, storage)
+executor = ExecutorFactory.from_config(config, spaces, storage, parse_metrics=True,
+                                        num_dbms_metrics=config.num_dbms_metrics)
 
 # evaluate on default config
 default_config = spaces.get_default_configuration()
 logger.info('Evaluating Default Configuration')
 logger.debug(default_config)
-perf = evaluate_dbms_conf(default_config, state=exp_state)
+perf, default_metrics = evaluate_dbms_conf(default_config, state=exp_state)
 perf = perf if exp_state.minimize else -perf
 assert perf >= 0, \
     f'Performance should not be negative: perf={perf}, metric={target_metric}'
+assert len(default_metrics) == config.num_dbms_metrics, \
+    ('DBMS metrics number does not match with expected: '
+    f'[ret={len(default_metrics)}] [exp={config.num_dbms_metrics}]')
 
 # set starting point for worse performance
 exp_state.worse_perf = perf * 4 if exp_state.minimize else perf / 4
 
-# Start optimization loop
-if hasattr(optimizer, 'optimize'):
-    optimizer.optimize()    # SMAC
-else:
-    optimizer.run()         # OpenBox
-
+# run DDPG
+optimizer.run()
 
 # Print final stats
 logger.info(f'\nBest Configuration:\n{exp_state.best_conf}')
